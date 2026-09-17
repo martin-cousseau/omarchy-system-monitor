@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.1 - 2026-09-17
+
+- Drop the RPM history sparkline from the fans section (live RPM rows and
+  presets stay). Thermal headline chart in sensors is unchanged.
+
 ## 1.5.0 - 2026-09-17
 
 - Rework the Apple Silicon fans section around history charts: two minutes
