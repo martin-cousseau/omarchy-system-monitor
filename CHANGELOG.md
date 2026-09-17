@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.2 - 2026-09-17
+
+- The headline tile on machines with no package sensor now shows heatpipe
+  power ("HEAT 12.4 W · SoC · no die sensor") instead of the warmest exposed
+  peripheral temperature. The warmest sensor could read mild while the SoC
+  ran far hotter out of sight, which read as the machine's peak and misled.
+  Heatpipe power is the SMC's estimate of the watts the SoC is dissipating —
+  it tracks the warmth you actually feel and is the same input the fan
+  curves follow. The bar tints from 15 W (critical at 25 W). The warmest
+  exposed temperature still headlines when no power sensor exists (labelled
+  "warmest: ..."), and the SENSORS section is unchanged.
+
 ## 1.4.1 - 2026-09-17
 
 - The TEMP tile now carries the hottest platform sensor on machines with no

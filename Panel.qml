@@ -35,12 +35,12 @@ Panel {
   readonly property real warningThreshold: Math.min(Number(setting("warningPercent", 80)), criticalThreshold - 1)
   readonly property real criticalThreshold: Math.max(Number(setting("criticalPercent", 95)), 61)
   readonly property real pressure: Math.max(metrics.cpuPercent, metrics.memoryPercent)
-  // On machines with no package sensor (Apple Silicon), the hottest platform
-  // temperature carries the warning tint so the bar still reacts to heat.
-  // A non-auto fan mode tints too: it means the SMC's automatic curve is
-  // overridden and software is the safety net now.
-  readonly property bool warning: pressure >= warningThreshold || metrics.cpuTemperature >= 85 || metrics.gpuTemperature >= 85 || metrics.hottestPlatformTemp >= 85 || metrics.fansManual
-  readonly property bool critical: pressure >= criticalThreshold || metrics.cpuTemperature >= 95 || metrics.gpuTemperature >= 95 || metrics.hottestPlatformTemp >= 95
+  // On machines with no package sensor (Apple Silicon), the thermal load
+  // shows in heatpipe watts: the tint tracks dissipated heat, the hottest
+  // platform temperature, and a non-auto fan mode (the SMC's automatic
+  // curve is overridden then, so software is the safety net).
+  readonly property bool warning: pressure >= warningThreshold || metrics.cpuTemperature >= 85 || metrics.gpuTemperature >= 85 || metrics.hottestPlatformTemp >= 85 || (metrics.cpuTemperature < 0 && metrics.heatpipeWatts >= heatWarnW) || metrics.fansManual
+  readonly property bool critical: pressure >= criticalThreshold || metrics.cpuTemperature >= 95 || metrics.gpuTemperature >= 95 || metrics.hottestPlatformTemp >= 95 || (metrics.cpuTemperature < 0 && metrics.heatpipeWatts >= heatCriticalW)
 
   readonly property string heroGlyph: "󰻠"
 
@@ -118,25 +118,68 @@ Panel {
     return one(metrics.loadOne) + " / " + one(metrics.loadFive) + " / " + one(metrics.loadFifteen)
   }
 
-  function temperatureText() {
+  // ---- Thermal headline ----
+  // With a package sensor (x86/AMD) the tile is that temperature. On Apple
+  // Silicon there is no die temperature at all, and the warmest exposed
+  // sensor is a peripheral that can read mild while the SoC runs hot out of
+  // sight — so the headline there is heatpipe power: the watts the SoC is
+  // actually dissipating, the number that tracks the warmth you feel and
+  // the same input the fan curves follow.
+  readonly property real heatWarnW: 15
+  readonly property real heatCriticalW: 25
+  readonly property real heatCeilingW: 30
+
+  function thermalTileIsWatts() {
+    return metrics.cpuTemperature < 0 && metrics.heatpipeWatts >= 0
+  }
+
+  function thermalTileTitle() {
+    return thermalTileIsWatts() ? "HEAT" : "TEMP"
+  }
+
+  function thermalTileValue() {
+    if (thermalTileIsWatts()) return metrics.heatpipeWatts.toFixed(1) + " W"
     if (metrics.cpuTemperature >= 0) return Math.round(metrics.cpuTemperature) + "°C"
-    // No package sensor (Apple Silicon): the headline temperature is the
-    // hottest platform sensor, with its name in the detail line below.
     if (metrics.hottestPlatformTemp >= 0) return Math.round(metrics.hottestPlatformTemp) + "°C"
     return "—"
   }
 
-  // The temperature the tile and tint track, whichever source is live.
-  function headlineTemperature() {
-    return metrics.cpuTemperature >= 0 ? metrics.cpuTemperature : metrics.hottestPlatformTemp
+  function thermalTileDetail() {
+    if (thermalTileIsWatts()) return "SoC · no die sensor"
+    if (metrics.cpuTemperature >= 0) {
+      if (metrics.cpuTemperature >= 85) return "Warm"
+      return "Normal"
+    }
+    // No heatpipe sensor either: the warmest exposed temperature, labelled
+    // as what it is — a peripheral, not the machine's peak.
+    var source = temperatureSourceLabel()
+    if (source !== "") return "warmest: " + source
+    return metrics.hasPlatformSensors ? "No SoC sensor" : "Unavailable"
   }
 
-  // Tooltip headline: the package sensor when there is one, otherwise the
-  // hottest platform sensor — Apple Silicon has no die sensor, and a bare
-  // dash would hide readings that do exist.
+  function thermalTileMeter() {
+    if (thermalTileIsWatts()) {
+      return Math.max(0, Math.min(100, metrics.heatpipeWatts * 100 / heatCeilingW))
+    }
+    return temperatureBandMeter(metrics.cpuTemperature >= 0 ? metrics.cpuTemperature : metrics.hottestPlatformTemp)
+  }
+
+  function thermalTileMeterColor() {
+    if (thermalTileIsWatts()) return levelColor(metrics.heatpipeWatts, heatWarnW, heatCriticalW)
+    return levelColor(metrics.cpuTemperature >= 0 ? metrics.cpuTemperature : metrics.hottestPlatformTemp, 85, 95)
+  }
+
+  function thermalTileAlarming() {
+    if (thermalTileIsWatts()) return metrics.heatpipeWatts >= heatCriticalW
+    return (metrics.cpuTemperature >= 0 ? metrics.cpuTemperature : metrics.hottestPlatformTemp) >= 95
+  }
+
+  // Tooltip headline: the package sensor when there is one, then heatpipe
+  // watts, then the warmest exposed temperature.
   function headlineTempText() {
-    if (metrics.cpuTemperature >= 0) return temperatureText()
-    if (metrics.hottestPlatformTemp >= 0) return "peak " + Math.round(metrics.hottestPlatformTemp) + "°C"
+    if (metrics.cpuTemperature >= 0) return Math.round(metrics.cpuTemperature) + "°C"
+    if (metrics.heatpipeWatts >= 0) return "heat " + metrics.heatpipeWatts.toFixed(1) + " W"
+    if (metrics.hottestPlatformTemp >= 0) return "warmest " + Math.round(metrics.hottestPlatformTemp) + "°C"
     return "—"
   }
 
@@ -148,26 +191,12 @@ Panel {
       .replace(/ Temp$/, "")
   }
 
-  function temperatureDetail() {
-    if (metrics.cpuTemperature >= 0) {
-      if (metrics.cpuTemperature >= 85) return "Warm"
-      return "Normal"
-    }
-    var source = temperatureSourceLabel()
-    if (source !== "") return source + " · peak"
-    return metrics.hasPlatformSensors ? "No SoC sensor" : "Unavailable"
-  }
-
   // Package temperature only spans a useful band; drawing 57°C as 57% of a
   // meter makes a cold chip look half-loaded. Anchor the scale at 30°C.
   function temperatureBandMeter(value) {
     if (!isFinite(value) || value < 0) return -1
     var span = temperatureCeiling - temperatureFloor
     return Math.max(0, Math.min(100, (value - temperatureFloor) * 100 / span))
-  }
-
-  function temperatureMeter() {
-    return temperatureBandMeter(headlineTemperature())
   }
 
   // Vendors expose different subsets: amdgpu publishes utilisation, memory and
@@ -572,12 +601,12 @@ Panel {
 
             StatTile {
               width: (parent.width - parent.spacing * 2) / 3
-              title: "TEMP"
-              value: root.temperatureText()
-              detail: root.temperatureDetail()
-              meter: root.temperatureMeter()
-              meterColor: root.levelColor(root.headlineTemperature(), 85, 95)
-              alarming: root.headlineTemperature() >= 95
+              title: root.thermalTileTitle()
+              value: root.thermalTileValue()
+              detail: root.thermalTileDetail()
+              meter: root.thermalTileMeter()
+              meterColor: root.thermalTileMeterColor()
+              alarming: root.thermalTileAlarming()
             }
           }
 

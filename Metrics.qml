@@ -97,6 +97,20 @@ Item {
     return best
   }
 
+  // Heatpipe power (the SMC's PHPC reading): an estimate of the heat the
+  // SoC is dissipating through its heatpipes. With no die temperature
+  // exposed, this is the closest thing to a CPU thermal load Asahi offers —
+  // and the same input the fan curves follow. -1 when unavailable.
+  readonly property real heatpipeWatts: {
+    var value = -1
+    for (var i = 0; i < platformSensors.length; i++) {
+      if (platformSensors[i].kind !== "power") continue
+      if (String(platformSensors[i].label).indexOf("Heatpipe") < 0) continue
+      if (platformSensors[i].value > value) value = platformSensors[i].value
+    }
+    return value
+  }
+
   // ---- Fan control (Apple Silicon, via the asahi-fanctl helper) ----
   // The daemon's mode lives in a root-readable config file, so the bar tint
   // and the panel's active preset stay live without spawning anything. Fan

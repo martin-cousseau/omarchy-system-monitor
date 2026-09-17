@@ -76,10 +76,11 @@ pressure. Warning and critical colors follow the active Omarchy theme.
 
 Temperature is shown when a supported package sensor is available. Apple
 Silicon Macs on Asahi have none — the SoC's die temperatures live in the PMU,
-not sysfs — so the TEMP tile there carries the hottest platform sensor (its
-detail line names the source), the SENSORS section lists every labelled
-`macsmc_hwmon` reading, and the hottest one drives the bar tint and tooltip.
-Disk
+not sysfs — so the headline tile there shows heatpipe power (the SMC's
+estimate of the watts the SoC is dissipating; it tracks the warmth you feel
+and drives the fan curves), the SENSORS section lists every labelled
+`macsmc_hwmon` reading, and the bar tint follows heatpipe watts and the
+hottest platform temperature. Disk
 activity aggregates physical devices and ignores loop, RAM, zram, floppy, and
 optical devices.
 
