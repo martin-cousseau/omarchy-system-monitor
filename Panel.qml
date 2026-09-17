@@ -37,7 +37,9 @@ Panel {
   readonly property real pressure: Math.max(metrics.cpuPercent, metrics.memoryPercent)
   // On machines with no package sensor (Apple Silicon), the hottest platform
   // temperature carries the warning tint so the bar still reacts to heat.
-  readonly property bool warning: pressure >= warningThreshold || metrics.cpuTemperature >= 85 || metrics.gpuTemperature >= 85 || metrics.hottestPlatformTemp >= 85
+  // A non-auto fan mode tints too: it means the SMC's automatic curve is
+  // overridden and software is the safety net now.
+  readonly property bool warning: pressure >= warningThreshold || metrics.cpuTemperature >= 85 || metrics.gpuTemperature >= 85 || metrics.hottestPlatformTemp >= 85 || metrics.fansManual
   readonly property bool critical: pressure >= criticalThreshold || metrics.cpuTemperature >= 95 || metrics.gpuTemperature >= 95 || metrics.hottestPlatformTemp >= 95
 
   readonly property string heroGlyph: "󰻠"
@@ -186,6 +188,44 @@ Panel {
     return ""
   }
 
+  // ---- Fans ----
+
+  function fanRows() {
+    if (!metrics.fanStatus || !metrics.fanStatus.fans) return []
+    return metrics.fanStatus.fans
+  }
+
+  function fanRpmText(fan) {
+    if (!fan || !isFinite(fan.rpm) || fan.rpm < 0) return "—"
+    var text = Math.round(fan.rpm) + " RPM"
+    // The target only means something while the fan is in manual mode;
+    // under SMC control it is Apple's own request, not ours.
+    if (metrics.fansManual && isFinite(fan.target) && fan.target > 0) {
+      text += " · tgt " + Math.round(fan.target)
+    }
+    return text
+  }
+
+  function fansSummaryText() {
+    if (!metrics.fanCtlAvailable) return "monitor only"
+    if (!metrics.fanStatus) return ""
+    if (!metrics.fanStatus.control) return "locked · SMC auto"
+    if (metrics.fanStatus.daemon && metrics.fanStatus.daemon.active !== true) return "daemon down"
+    if (metrics.fanMode === "" || metrics.fanMode === "auto") return "SMC auto"
+    return "manual · " + metrics.fanMode
+  }
+
+  function applyFanCurve() {
+    metrics.runFanctl([
+      "curve",
+      String(loWField.field.value),
+      String(hiWField.field.value),
+      String(rpmMinField.field.value),
+      String(rpmMaxField.field.value),
+      String(floorField.field.value)
+    ])
+  }
+
   // Row skips invisible children, so the divisor is the number of tiles that
   // this card can actually fill.
   function gpuTileWidth(rowWidth, spacing) {
@@ -293,6 +333,13 @@ Panel {
       if (hasGpuTemperature) gpu.push((hasGpuUsage ? "" : "GPU ") + gpuTemperatureText())
       if (hasGpuVram) gpu.push("VRAM " + gpuVramDetail())
       lines.push(gpu.join(" · "))
+    }
+    if (metrics.hasPlatformSensors && fanRows().length > 0) {
+      var speeds = []
+      for (var fanIndex = 0; fanIndex < metrics.fanStatus.fans.length; fanIndex++) {
+        speeds.push(Math.round(metrics.fanStatus.fans[fanIndex].rpm) + " RPM")
+      }
+      lines.push("Fans " + speeds.join(" / ") + (metrics.fansManual ? " · " + metrics.fanMode : " · SMC"))
     }
     lines.push("Load " + loadText() + (interfaceName !== "" ? " · " + interfaceName : ""))
     lines.push("Net ↓ " + formatRate(metrics.networkDownBps) + " ↑ " + formatRate(metrics.networkUpBps))
@@ -409,9 +456,9 @@ Panel {
     contentWidth: panel.fittedContentWidth(Style.space(380))
     // Capped height, not a fixed one: fittedContentHeight still shrinks to fit
     // the screen and to the content itself, this just raises the ceiling so
-    // the added CapacityRow entries (one per auto-discovered disk) and
-    // platform sensor rows aren't clipped.
-    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(600 + metrics.extraFilesystems.length * 40 + (metrics.hasPlatformSensors ? metrics.platformSensors.length * 40 : 0)))
+    // the added CapacityRow entries (one per auto-discovered disk), platform
+    // sensor rows, and the fans section aren't clipped.
+    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(600 + metrics.extraFilesystems.length * 40 + (metrics.hasPlatformSensors ? metrics.platformSensors.length * 40 + (metrics.fanMode === "custom" ? 340 : 240) : 0)))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -578,6 +625,194 @@ Panel {
                 value: root.sensorValueText(modelData)
                 meter: modelData.kind === "temp" ? root.temperatureBandMeter(modelData.value) : -1
                 meterColor: root.levelColor(modelData.value, 85, 95)
+              }
+            }
+          }
+
+          // ---------- Fans (Apple Silicon) ----------
+          // Macs Fan Control-style table: live RPMs plus a preset selector.
+          // Presets hand the fans to the asahi-fand daemon, which follows
+          // heatpipe power; Auto gives them back to the SMC's own curve.
+          // Hidden entirely on machines without the SMC hwmon device.
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: metrics.hasPlatformSensors
+
+            SectionHeading {
+              title: "FANS"
+              value: root.fansSummaryText()
+            }
+
+            Repeater {
+              model: root.fanRows()
+
+              FanRow {
+                required property var modelData
+                label: modelData.label
+                rpmText: root.fanRpmText(modelData)
+                rangeText: (isFinite(modelData.min) && isFinite(modelData.max)
+                  ? Math.round(modelData.min) + "–" + Math.round(modelData.max) + " RPM" : "")
+                manual: metrics.fansManual
+              }
+            }
+
+            Text {
+              visible: metrics.fanCtlError !== ""
+              width: parent.width
+              text: metrics.fanCtlError
+              textFormat: Text.PlainText
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // Helper missing: sensors keep working, control just isn't
+            // possible. Point at the README rather than a dead button.
+            Text {
+              visible: !metrics.fanCtlAvailable
+              width: parent.width
+              text: "Fan control requires the asahi-fanctl helper (see README)"
+              textFormat: Text.PlainText
+              color: root.muted
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+
+            // Control locked (module parameter off — not yet enabled, or
+            // before the persistent cmdline reboot): one click unlocks it.
+            Button {
+              visible: metrics.fanCtlAvailable && metrics.fanStatus && !metrics.fanStatus.control
+              width: parent.width
+              text: "Enable manual control"
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: metrics.enableFanControl()
+            }
+
+            // Presets: two rows of three so every chip fits the panel width.
+            Column {
+              width: parent.width
+              spacing: Style.space(4)
+              visible: metrics.fanCtlAvailable
+
+              ButtonGroup {
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                options: [
+                  { value: "auto", label: "Auto" },
+                  { value: "quiet", label: "Quiet" },
+                  { value: "balanced", label: "Balanced" }
+                ]
+                value: metrics.fanMode
+                onChanged: function(selected) { metrics.runFanctl(["mode", selected]) }
+              }
+
+              ButtonGroup {
+                foreground: root.foreground
+                accent: root.accent
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                options: [
+                  { value: "boost", label: "Boost" },
+                  { value: "full", label: "Full" },
+                  { value: "custom", label: "Custom" }
+                ]
+                value: metrics.fanMode
+                onChanged: function(selected) { metrics.runFanctl(["mode", selected]) }
+              }
+            }
+
+            // Custom curve: RPM scales from rpm min to max as heatpipe power
+            // crosses the watt window; the floor is an always-at-least RPM.
+            Column {
+              id: curveEditor
+              width: parent.width
+              spacing: Style.space(4)
+              visible: metrics.fanMode === "custom"
+
+              Row {
+                spacing: Style.space(8)
+
+                NumberField {
+                  id: loWField
+                  label: "Low W"
+                  from: 0
+                  to: 60
+                  stepSize: 1
+                  value: Math.round(metrics.fanCurveLoW)
+                  foreground: root.foreground
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                }
+
+                NumberField {
+                  id: hiWField
+                  label: "High W"
+                  from: 1
+                  to: 100
+                  stepSize: 1
+                  value: Math.round(metrics.fanCurveHiW)
+                  foreground: root.foreground
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                }
+
+                NumberField {
+                  id: floorField
+                  label: "Floor RPM"
+                  from: 0
+                  to: 6400
+                  stepSize: 50
+                  value: Math.round(metrics.fanCurveFloorRpm)
+                  foreground: root.foreground
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                }
+              }
+
+              Row {
+                spacing: Style.space(8)
+
+                NumberField {
+                  id: rpmMinField
+                  label: "Min RPM"
+                  from: 1200
+                  to: 6400
+                  stepSize: 50
+                  value: Math.round(metrics.fanCurveRpmMin)
+                  foreground: root.foreground
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                }
+
+                NumberField {
+                  id: rpmMaxField
+                  label: "Max RPM"
+                  from: 1200
+                  to: 6400
+                  stepSize: 50
+                  value: Math.round(metrics.fanCurveRpmMax)
+                  foreground: root.foreground
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                }
+
+                Button {
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: "Apply"
+                  foreground: root.foreground
+                  accent: root.accent
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: root.applyFanCurve()
+                }
               }
             }
           }
@@ -1099,6 +1334,58 @@ Panel {
       visible: sensorRow.meter >= 0
       value: sensorRow.meter
       fillColor: sensorRow.meterColor
+    }
+  }
+
+  // One fan: label and live RPM on the first line, the driver's RPM window
+  // beneath it. The RPM value warms up while the fan is under manual control
+  // so the row itself says which side owns it.
+  component FanRow: Column {
+    id: fanRow
+    property string label: ""
+    property string rpmText: "—"
+    property string rangeText: ""
+    property bool manual: false
+
+    width: parent ? parent.width : 0
+    spacing: Style.space(3)
+
+    Item {
+      width: parent.width
+      implicitHeight: Math.max(fanLabel.implicitHeight, fanRpm.implicitHeight)
+
+      Text {
+        id: fanLabel
+        text: fanRow.label
+        textFormat: Text.PlainText
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        id: fanRpm
+        text: fanRow.rpmText
+        textFormat: Text.PlainText
+        color: fanRow.manual ? root.warningColor : root.muted
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.bold: true
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    Text {
+      visible: fanRow.rangeText !== ""
+      text: fanRow.rangeText
+      textFormat: Text.PlainText
+      color: root.muted
+      opacity: 0.7
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
     }
   }
 

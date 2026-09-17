@@ -85,6 +85,29 @@ Item {
     return hottest
   }
 
+  // ---- Fan control (Apple Silicon, via the asahi-fanctl helper) ----
+  // The daemon's mode lives in a root-readable config file, so the bar tint
+  // and the panel's active preset stay live without spawning anything. Fan
+  // RPMs and the control state come from `sudo -n asahi-fanctl status`,
+  // polled only while the panel is open.
+  property string fanMode: ""
+  property real fanCurveLoW: 4
+  property real fanCurveHiW: 18
+  property real fanCurveRpmMin: 1300
+  property real fanCurveRpmMax: 5700
+  property real fanCurveFloorRpm: 0
+  property var fanStatus: null
+  property bool fanCtlAvailable: false
+  property string fanCtlError: ""
+  property bool fanControlSeen: false
+
+  readonly property bool fansManual: fanMode !== "" && fanMode !== "auto"
+
+  function runFanctl(args) {
+    fanctlProc.command = ["sudo", "-n", "/usr/local/bin/asahi-fanctl"].concat(args)
+    fanctlProc.running = true
+  }
+
   property var cpuHistory: []
   property var memoryHistory: []
   property var gpuHistory: []
@@ -121,6 +144,32 @@ Item {
     platformSensorValues = next
   }
 
+  function parseFanConfig(raw) {
+    var lines = String(raw || "").split("\n")
+    var values = ({})
+    for (var i = 0; i < lines.length; i++) {
+      var separator = lines[i].indexOf("=")
+      if (separator < 0) continue
+      values[lines[i].slice(0, separator).trim()] = lines[i].slice(separator + 1).trim()
+    }
+    fanMode = values.MODE !== undefined ? values.MODE : "auto"
+    var number = Number(values.CURVE_LO_W)
+    if (isFinite(number) && number > 0) fanCurveLoW = number
+    number = Number(values.CURVE_HI_W)
+    if (isFinite(number) && number > 0) fanCurveHiW = number
+    number = Number(values.CURVE_RPM_MIN)
+    if (isFinite(number) && number >= 0) fanCurveRpmMin = number
+    number = Number(values.CURVE_RPM_MAX)
+    if (isFinite(number) && number >= 0) fanCurveRpmMax = number
+    number = Number(values.CURVE_FLOOR_RPM)
+    if (isFinite(number) && number >= 0) fanCurveFloorRpm = number
+  }
+
+  function enableFanControl() {
+    fanctlProc.rediscovers = true
+    runFanctl(["enable"])
+  }
+
   function sample() {
     statFile.reload()
     memoryFile.reload()
@@ -139,6 +188,8 @@ Item {
       var sensorFile = sensorFileViews.objectAt(i)
       if (sensorFile) sensorFile.sample()
     }
+    // Fan RPMs only matter while someone is looking at the panel.
+    if (panelOpen && hasPlatformSensors && !fanStatusProc.running) fanStatusProc.running = true
 
     var now = Date.now()
     if (panelOpen && !filesystemProc.running && now - lastFilesystemRefreshMs >= 60000) {
@@ -385,6 +436,71 @@ Item {
     onFileChanged: reload()
   }
 
+  // The daemon rewrites its config on every mode change, so watching this
+  // file keeps the active preset (and the bar's manual-mode tint) live with
+  // zero polling. Absent file = helper not installed = no fan section.
+  FileView {
+    id: fanModeFile
+    path: "/etc/asahi-fand.conf"
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.parseFanConfig(text())
+    onLoadFailed: {
+      root.fanMode = ""
+      root.fanCtlAvailable = false
+    }
+    onFileChanged: reload()
+  }
+
+  Process {
+    id: fanStatusProc
+    command: ["sudo", "-n", "/usr/local/bin/asahi-fanctl", "status"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var parsed = null
+        try { parsed = JSON.parse(String(text)) } catch (error) { parsed = null }
+        if (parsed && parsed.fans !== undefined) {
+          root.fanStatus = parsed
+          root.fanCtlAvailable = true
+          root.fanCtlError = ""
+        } else {
+          root.fanStatus = null
+          root.fanCtlAvailable = false
+        }
+        // The daemon can unlock control on its own (rebinding the driver and
+        // moving sysfs paths); a false→true transition means rediscover.
+        if (parsed && parsed.control && !root.fanControlSeen && !discoveryProc.running) {
+          discoveryProc.running = true
+        }
+        if (parsed) root.fanControlSeen = parsed.control === true
+      }
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (String(text).trim() !== "") root.fanCtlError = String(text).trim()
+    }
+  }
+
+  // One-shot runner for mode/curve/enable commands; the exit handler
+  // refreshes status, and `enable` additionally rediscovers sensors (the
+  // driver rebind moves hwmon paths).
+  Process {
+    id: fanctlProc
+    property bool rediscovers: false
+    stdout: StdioCollector { waitForEnd: true }
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.fanCtlError = String(text).trim()
+    }
+    onExited: function(exitCode, exitStatus) {
+      if (exitCode === 0) root.fanCtlError = ""
+      if (rediscovers && !discoveryProc.running) discoveryProc.running = true
+      rediscovers = false
+      fanStatusProc.running = true
+    }
+  }
+
   Process {
     id: discoveryProc
     command: ["bash", root.pluginPath + "/discover-sensors.sh"]
@@ -429,6 +545,9 @@ Item {
           var sensorFile = sensorFileViews.objectAt(k)
           if (sensorFile) sensorFile.sample()
         }
+        // An SMC hwmon machine may have the fan control helper installed:
+        // prime its state (mode comes from the watched config file).
+        if (specs.length > 0 && !fanStatusProc.running) fanStatusProc.running = true
       }
     }
   }

@@ -18,6 +18,9 @@ background daemon or telemetry service.
 - Expandable dashboard for CPU, RAM, temperature, load, and uptime
 - Platform sensor section on Apple Silicon (Asahi): every labelled SMC
   temperature and power rail, since no SoC die sensor exists there
+- Fan control on Apple Silicon (optional, via the `asahi-fanctl` helper):
+  live RPMs, SMC/Auto plus Quiet, Balanced, Boost, Full, and custom
+  heatpipe-power curve presets
 - GPU utilization, temperature, and VRAM, with per-sensor vendor fallbacks
 - Two-minute CPU, memory, and GPU history with per-core utilization
 - Mirrored network throughput history on a shared scale
@@ -114,6 +117,39 @@ memory, which picks the discrete adapter on hybrid systems without hard-coding
 device identifiers. Two temperature-only cards in one machine — an Intel iGPU
 next to an Arc card, for instance — cannot currently be told apart, and the
 first is used.
+
+## Fan control (Apple Silicon, optional)
+
+On Asahi machines the panel grows a FANS section when the `asahi-fanctl`
+helper and its `asahi-fand` systemd daemon are installed. Nothing is
+required for the monitoring features — without the helper the section
+simply explains that control is unavailable.
+
+| Preset | Behavior |
+| --- | --- |
+| Auto | Fans are handed back to the SMC's automatic curve (Apple's firmware) |
+| Quiet | Low curve biased toward silence (6–28 W heatpipe, up to ~70% of range) |
+| Balanced | Middle curve (3–18 W, up to ~90% of range) |
+| Boost | Early ramp with a ~25% RPM floor (8–16 W, up to 100%) |
+| Full | Maximum RPM |
+| Custom | Your own curve: RPM scales between two bounds as heatpipe power crosses a watt window, with an optional always-at-least floor |
+
+Why heatpipe power and not CPU temperature: Asahi does not expose SoC die
+temperatures — they live in the PMU. The SMC's heatpipe power reading is an
+estimate of the heat the SoC is dissipating, which makes it the best
+available proxy for how hard the chip is working.
+
+Safety model, in order: any platform sensor at or above the critical
+threshold (default 70°C, `CRITICAL_TEMP_C` in `/etc/asahi-fand.conf`)
+forces maximum RPM and sends a notification; stopping or crashing the
+daemon hands every fan back to the SMC (`ExecStopPost`); and a suspend hook
+restores automatic control before sleep. While a preset other than Auto is
+active the SMC does **not** manage the fans — the bar widget tints to say
+so.
+
+The helper is invoked through a targeted sudoers rule
+(`NOPASSWD: /usr/local/bin/asahi-fanctl`); it validates every argument
+(mode whitelist, per-fan RPM bounds) before touching sysfs.
 
 ## Configure
 

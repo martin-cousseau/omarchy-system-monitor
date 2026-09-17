@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.0 - 2026-09-17
+
+- Add an Apple Silicon fan control section. When the optional `asahi-fanctl`
+  helper and its `asahi-fand` systemd daemon are installed, the panel shows
+  live fan RPMs and a preset selector: Auto (the SMC's own curve), Quiet,
+  Balanced, and Boost (curves driven by heatpipe power), Full, or a custom
+  heatpipe-power curve edited inline. The bar tints while any non-auto preset
+  is active — that means the SMC's automatic management is overridden and
+  software is the safety net. Machines without the SMC hwmon device never
+  see the section, and the helper is never required for monitoring.
+
 ## 1.3.0 - 2026-09-17
 
 - Add an Apple Silicon (Asahi Linux) sensors section: `macsmc_hwmon` publishes
