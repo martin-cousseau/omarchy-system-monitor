@@ -119,7 +119,16 @@ Panel {
   }
 
   function temperatureText() {
-    return metrics.cpuTemperature >= 0 ? Math.round(metrics.cpuTemperature) + "°C" : "—"
+    if (metrics.cpuTemperature >= 0) return Math.round(metrics.cpuTemperature) + "°C"
+    // No package sensor (Apple Silicon): the headline temperature is the
+    // hottest platform sensor, with its name in the detail line below.
+    if (metrics.hottestPlatformTemp >= 0) return Math.round(metrics.hottestPlatformTemp) + "°C"
+    return "—"
+  }
+
+  // The temperature the tile and tint track, whichever source is live.
+  function headlineTemperature() {
+    return metrics.cpuTemperature >= 0 ? metrics.cpuTemperature : metrics.hottestPlatformTemp
   }
 
   // Tooltip headline: the package sensor when there is one, otherwise the
@@ -131,10 +140,22 @@ Panel {
     return "—"
   }
 
+  function temperatureSourceLabel() {
+    var sensor = metrics.hottestPlatformSensor
+    if (!sensor || !isFinite(sensor.value) || sensor.value < 0) return ""
+    return String(sensor.label)
+      .replace(/ Temperature$/, "")
+      .replace(/ Temp$/, "")
+  }
+
   function temperatureDetail() {
-    if (metrics.cpuTemperature < 0) return metrics.hasPlatformSensors ? "No SoC sensor" : "Unavailable"
-    if (metrics.cpuTemperature >= 85) return "Warm"
-    return "Normal"
+    if (metrics.cpuTemperature >= 0) {
+      if (metrics.cpuTemperature >= 85) return "Warm"
+      return "Normal"
+    }
+    var source = temperatureSourceLabel()
+    if (source !== "") return source + " · peak"
+    return metrics.hasPlatformSensors ? "No SoC sensor" : "Unavailable"
   }
 
   // Package temperature only spans a useful band; drawing 57°C as 57% of a
@@ -146,7 +167,7 @@ Panel {
   }
 
   function temperatureMeter() {
-    return temperatureBandMeter(metrics.cpuTemperature)
+    return temperatureBandMeter(headlineTemperature())
   }
 
   // Vendors expose different subsets: amdgpu publishes utilisation, memory and
@@ -555,8 +576,8 @@ Panel {
               value: root.temperatureText()
               detail: root.temperatureDetail()
               meter: root.temperatureMeter()
-              meterColor: root.levelColor(metrics.cpuTemperature, 85, 95)
-              alarming: metrics.cpuTemperature >= 95
+              meterColor: root.levelColor(root.headlineTemperature(), 85, 95)
+              alarming: root.headlineTemperature() >= 95
             }
           }
 

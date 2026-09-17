@@ -85,6 +85,18 @@ Item {
     return hottest
   }
 
+  // The hottest platform temperature and the sensor that owns it, so the
+  // temperature tile can name its source instead of pretending a package
+  // sensor exists.
+  readonly property var hottestPlatformSensor: {
+    var best = null
+    for (var i = 0; i < platformSensors.length; i++) {
+      if (platformSensors[i].kind !== "temp") continue
+      if (!best || platformSensors[i].value > best.value) best = platformSensors[i]
+    }
+    return best
+  }
+
   // ---- Fan control (Apple Silicon, via the asahi-fanctl helper) ----
   // The daemon's mode lives in a root-readable config file, so the bar tint
   // and the panel's active preset stay live without spawning anything. Fan

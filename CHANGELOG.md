@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.4.1 - 2026-09-17
+
+- The TEMP tile now carries the hottest platform sensor on machines with no
+  package sensor, its detail line naming the source (e.g. "Charge Regulator
+  · peak"), instead of a dead dash that read like a discovery failure. The
+  SENSORS section still lists every reading.
+
 ## 1.4.0 - 2026-09-17
 
 - Add an Apple Silicon fan control section. When the optional `asahi-fanctl`
