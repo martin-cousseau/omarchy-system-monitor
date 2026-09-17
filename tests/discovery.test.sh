@@ -131,12 +131,18 @@ printf '38500\n' >"$work/macsmc/hwmon2/temp1_input"
 printf '45000\n' >"$work/macsmc/hwmon2/temp2_input"
 printf '29970000\n' >"$work/macsmc/hwmon2/power1_input"
 printf 'Total System Power\n' >"$work/macsmc/hwmon2/power1_label"
+printf 'Fan 1 \n' >"$work/macsmc/hwmon2/fan1_label"
+printf '2417\n' >"$work/macsmc/hwmon2/fan1_input"
+printf '1200\n' >"$work/macsmc/hwmon2/fan1_min"
+printf '5779\n' >"$work/macsmc/hwmon2/fan1_max"
 expect_line "macsmc labelled temp with trailing padding trimmed" macsmc \
   "$(printf 'platform_sensor\t%s/hwmon2/temp1_input\ttemp\tNAND Flash Temperature' "$work/macsmc")"
 expect_line "macsmc unlabelled temp gets a numbered fallback" macsmc \
   "$(printf 'platform_sensor\t%s/hwmon2/temp2_input\ttemp\tTemperature 2' "$work/macsmc")"
 expect_line "macsmc power rail keeps its label" macsmc \
   "$(printf 'platform_sensor\t%s/hwmon2/power1_input\tpower\tTotal System Power' "$work/macsmc")"
+expect_line "macsmc fan record carries index, label and bounds" macsmc \
+  "$(printf 'fan\t%s/hwmon2/fan1_input\t1\tFan 1\t1200\t5779' "$work/macsmc")"
 expect_key_absent "macsmc emits no cpu_temp (there is no package sensor)" macsmc cpu_temp
 
 echo "macsmc alongside coretemp - both are reported, neither masks the other"

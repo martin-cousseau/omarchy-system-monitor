@@ -240,11 +240,6 @@ Panel {
 
   // ---- Fans ----
 
-  function fanRows() {
-    if (!metrics.fanStatus || !metrics.fanStatus.fans) return []
-    return metrics.fanStatus.fans
-  }
-
   function fanRpmText(fan) {
     if (!fan || !isFinite(fan.rpm) || fan.rpm < 0) return "—"
     var text = Math.round(fan.rpm) + " RPM"
@@ -258,9 +253,8 @@ Panel {
 
   function fansSummaryText() {
     if (!metrics.fanCtlAvailable) return "monitor only"
-    if (!metrics.fanStatus) return ""
-    if (!metrics.fanStatus.control) return "locked · SMC auto"
-    if (metrics.fanStatus.daemon && metrics.fanStatus.daemon.active !== true) return "daemon down"
+    if (!metrics.fanControlUnlocked) return "locked · SMC auto"
+    if (metrics.fanStatus && metrics.fanStatus.daemon && metrics.fanStatus.daemon.active !== true) return "daemon down"
     if (metrics.fanMode === "" || metrics.fanMode === "auto") return "SMC auto"
     return "manual · " + metrics.fanMode
   }
@@ -384,10 +378,11 @@ Panel {
       if (hasGpuVram) gpu.push("VRAM " + gpuVramDetail())
       lines.push(gpu.join(" · "))
     }
-    if (metrics.hasPlatformSensors && fanRows().length > 0) {
+    if (metrics.fans.length > 0) {
       var speeds = []
-      for (var fanIndex = 0; fanIndex < metrics.fanStatus.fans.length; fanIndex++) {
-        speeds.push(Math.round(metrics.fanStatus.fans[fanIndex].rpm) + " RPM")
+      for (var fanIndex = 0; fanIndex < metrics.fans.length; fanIndex++) {
+        var fan = metrics.fans[fanIndex]
+        speeds.push(isFinite(fan.rpm) && fan.rpm >= 0 ? Math.round(fan.rpm) + " RPM" : "—")
       }
       lines.push("Fans " + speeds.join(" / ") + (metrics.fansManual ? " · " + metrics.fanMode : " · SMC"))
     }
@@ -507,8 +502,9 @@ Panel {
     // Capped height, not a fixed one: fittedContentHeight still shrinks to fit
     // the screen and to the content itself, this just raises the ceiling so
     // the added CapacityRow entries (one per auto-discovered disk), platform
-    // sensor rows, and the fans section aren't clipped.
-    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(600 + metrics.extraFilesystems.length * 40 + (metrics.hasPlatformSensors ? metrics.platformSensors.length * 40 + (metrics.fanMode === "custom" ? 340 : 240) : 0)))
+    // sensor rows, thermal and RPM charts, and the fans section aren't
+    // clipped.
+    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(600 + metrics.extraFilesystems.length * 40 + (metrics.hasPlatformSensors ? metrics.platformSensors.length * 40 + (metrics.fanMode === "custom" ? 470 : 370) : 0)))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -666,6 +662,51 @@ Panel {
               value: root.sensorSummaryText()
             }
 
+            // Thermal headline over time — the same value the HEAT tile
+            // carries (heatpipe watts here, package temperature elsewhere),
+            // peak-scaled like the network chart.
+            Item {
+              width: parent.width
+              height: Style.space(54)
+              visible: metrics.thermalHistory.length > 1
+
+              Sparkline {
+                anchors.fill: parent
+                points: metrics.thermalHistory
+                lineColor: root.accent
+                fillColor: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
+                gridColor: root.chartGrid
+                fixedMaximum: Math.max(metrics.thermalPeak, 0.001)
+              }
+
+              Text {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                text: metrics.thermalHeadline >= 0
+                  ? metrics.thermalHeadline.toFixed(1) + " " + metrics.thermalHeadlineUnit
+                  : ""
+                textFormat: Text.PlainText
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+              }
+
+              Text {
+                anchors.right: parent.right
+                anchors.top: parent.top
+                text: metrics.thermalPeak > 0
+                  ? "peak " + (metrics.thermalPeak >= 100
+                      ? Math.round(metrics.thermalPeak)
+                      : metrics.thermalPeak.toFixed(1)) + " " + metrics.thermalHeadlineUnit
+                  : ""
+                textFormat: Text.PlainText
+                color: root.muted
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
             Repeater {
               model: metrics.platformSensors
 
@@ -680,10 +721,11 @@ Panel {
           }
 
           // ---------- Fans (Apple Silicon) ----------
-          // Macs Fan Control-style table: live RPMs plus a preset selector.
-          // Presets hand the fans to the asahi-fand daemon, which follows
-          // heatpipe power; Auto gives them back to the SMC's own curve.
-          // Hidden entirely on machines without the SMC hwmon device.
+          // Macs Fan Control-style: live RPMs, a two-minute RPM history so
+          // preset changes are visible the moment they land, then the
+          // preset selector. Auto hands the fans back to the SMC's own
+          // curve; the others run in the asahi-fand daemon following
+          // heatpipe power. Hidden without the SMC hwmon device.
           Column {
             width: parent.width
             spacing: Style.space(6)
@@ -695,7 +737,7 @@ Panel {
             }
 
             Repeater {
-              model: root.fanRows()
+              model: metrics.fans
 
               FanRow {
                 required property var modelData
@@ -704,6 +746,60 @@ Panel {
                 rangeText: (isFinite(modelData.min) && isFinite(modelData.max)
                   ? Math.round(modelData.min) + "–" + Math.round(modelData.max) + " RPM" : "")
                 manual: metrics.fansManual
+              }
+            }
+
+            // Two minutes of RPM history, one line per fan on a shared
+            // scale — the immediate visual answer to "what did that preset
+            // actually change".
+            Item {
+              width: parent.width
+              height: Style.space(64)
+              visible: metrics.fans.length > 0
+
+              Repeater {
+                model: metrics.fans
+
+                Sparkline {
+                  id: fanLine
+                  required property var modelData
+                  required property int index
+                  anchors.fill: parent
+                  points: metrics.fanHistoryFor(modelData.index)
+                  lineColor: fanLine.modelData.index % 2 === 1 ? root.accent : root.secondary
+                  fillColor: fanLine.modelData.index % 2 === 1
+                    ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
+                    : "transparent"
+                  // Only the first line carries the grid; the rest overlay.
+                  gridColor: fanLine.index === 0 ? root.chartGrid : "transparent"
+                  fixedMaximum: Math.max(metrics.fansPeakRpm, 1)
+                }
+              }
+
+              Text {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                text: metrics.fansPeakRpm > 0 ? "peak " + Math.round(metrics.fansPeakRpm) : ""
+                textFormat: Text.PlainText
+                color: root.muted
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+
+              Row {
+                anchors.top: parent.top
+                anchors.right: parent.right
+                spacing: Style.space(8)
+
+                Repeater {
+                  model: metrics.fans
+
+                  LegendDot {
+                    required property var modelData
+                    colorValue: modelData.index % 2 === 1 ? root.accent : root.secondary
+                    label: modelData.label
+                  }
+                }
               }
             }
 
@@ -731,10 +827,9 @@ Panel {
               wrapMode: Text.WordWrap
             }
 
-            // Control locked (module parameter off — not yet enabled, or
-            // before the persistent cmdline reboot): one click unlocks it.
+            // Control locked (module parameter off): one click unlocks it.
             Button {
-              visible: metrics.fanCtlAvailable && metrics.fanStatus && !metrics.fanStatus.control
+              visible: metrics.fanCtlAvailable && !metrics.fanControlUnlocked
               width: parent.width
               text: "Enable manual control"
               foreground: root.foreground
@@ -744,39 +839,25 @@ Panel {
               onClicked: metrics.enableFanControl()
             }
 
-            // Presets: two rows of three so every chip fits the panel width.
-            Column {
+            // Presets, deliberately far apart so they feel different:
+            // Auto (SMC), Quiet (minimum idle, capped), Boost (audible
+            // floor, full by 14 W), Full, Custom. One row.
+            ButtonGroup {
               width: parent.width
-              spacing: Style.space(4)
               visible: metrics.fanCtlAvailable
-
-              ButtonGroup {
-                foreground: root.foreground
-                accent: root.accent
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                options: [
-                  { value: "auto", label: "Auto" },
-                  { value: "quiet", label: "Quiet" },
-                  { value: "balanced", label: "Balanced" }
-                ]
-                value: metrics.fanMode
-                onChanged: function(selected) { metrics.runFanctl(["mode", selected]) }
-              }
-
-              ButtonGroup {
-                foreground: root.foreground
-                accent: root.accent
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                options: [
-                  { value: "boost", label: "Boost" },
-                  { value: "full", label: "Full" },
-                  { value: "custom", label: "Custom" }
-                ]
-                value: metrics.fanMode
-                onChanged: function(selected) { metrics.runFanctl(["mode", selected]) }
-              }
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              options: [
+                { value: "auto", label: "Auto" },
+                { value: "quiet", label: "Quiet" },
+                { value: "boost", label: "Boost" },
+                { value: "full", label: "Full" },
+                { value: "custom", label: "Custom" }
+              ]
+              value: metrics.fanMode
+              onChanged: function(selected) { metrics.runFanctl(["mode", selected]) }
             }
 
             // Custom curve: RPM scales from rpm min to max as heatpipe power

@@ -80,6 +80,27 @@ for hwmon in "$hwmon_root"/hwmon*; do
     printf 'platform_sensor\t%s\tpower\t%s\n' "$input" "$label"
   done
 
+  # Fans: the input path plus the driver's RPM window, so the panel can poll
+  # live speeds straight from sysfs without shelling out.
+  for input in "$hwmon"/fan*_input; do
+    [[ -r "$input" ]] || continue
+    label=""
+    label_file="${input%_input}_label"
+    if [[ -r "$label_file" ]]; then
+      IFS= read -r label <"$label_file"
+      label="${label#"${label%%[![:space:]]*}"}"
+      label="${label%"${label##*[![:space:]]}"}"
+    fi
+    fan_index="${input##*fan}"
+    fan_index="${fan_index%_input}"
+    [[ -z "$label" ]] && label="Fan $fan_index"
+    min=""
+    [[ -r "${input%_input}_min" ]] && IFS= read -r min <"${input%_input}_min"
+    max=""
+    [[ -r "${input%_input}_max" ]] && IFS= read -r max <"${input%_input}_max"
+    printf 'fan\t%s\t%s\t%s\t%s\t%s\n' "$input" "$fan_index" "$label" "${min:-0}" "${max:-0}"
+  done
+
   break
 done
 

@@ -130,11 +130,16 @@ simply explains that control is unavailable.
 | Preset | Behavior |
 | --- | --- |
 | Auto | Fans are handed back to the SMC's automatic curve (Apple's firmware) |
-| Quiet | Low curve biased toward silence (6–28 W heatpipe, up to ~70% of range) |
-| Balanced | Middle curve (3–18 W, up to ~90% of range) |
-| Boost | Early ramp with a ~25% RPM floor (8–16 W, up to 100%) |
+| Quiet | Idles at the fan minimum, ramps from 6 W, capped at ~65% of range |
+| Boost | Audible ~30% floor even at idle, 100% of range by 14 W |
 | Full | Maximum RPM |
 | Custom | Your own curve: RPM scales between two bounds as heatpipe power crosses a watt window, with an optional always-at-least floor |
+
+The presets are deliberately far apart — Quiet and Boost differ by more
+than 1200 RPM at idle. The fans section also plots two minutes of RPM
+history per fan, so a preset change is visible the moment it lands, and the
+sensors section charts the thermal headline (heatpipe watts) over the same
+window.
 
 Why heatpipe power and not CPU temperature: Asahi does not expose SoC die
 temperatures — they live in the PMU. The SMC's heatpipe power reading is an

@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.0 - 2026-09-17
+
+- Rework the Apple Silicon fans section around history charts: two minutes
+  of RPM per fan (one line each on a shared scale) so switching presets
+  shows its effect immediately, and a thermal-headline chart in the sensors
+  section plotting the same value the HEAT tile carries — heatpipe watts on
+  Asahi, package temperature elsewhere. Fan speeds now come straight from
+  sysfs, so the history accumulates even with the panel closed
+- Drop the Balanced preset: it sat between Quiet and SMC Auto and was
+  indistinguishable from both. Quiet and Boost are now deliberately far
+  apart — Quiet idles at the fan minimum and caps at ~65% of range; Boost
+  holds a ~30% floor even at idle and reaches 100% by 14 W. One preset row
+- Fan RPMs, targets, and the control-lock state now come from watched
+  sysfs files instead of a per-tick helper poll; the helper is queried once
+  per panel open for the daemon's own state
+
 ## 1.4.2 - 2026-09-17
 
 - The headline tile on machines with no package sensor now shows heatpipe

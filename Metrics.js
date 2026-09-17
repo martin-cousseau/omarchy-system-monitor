@@ -146,7 +146,8 @@ function parseDiscovery(raw) {
     gpuVramUsedPath: "",
     gpuVramTotalPath: "",
     devices: [],
-    platformSensors: []
+    platformSensors: [],
+    fans: []
   }
   var lines = String(raw || "").split("\n")
   for (var i = 0; i < lines.length; i++) {
@@ -169,6 +170,25 @@ function parseDiscovery(raw) {
           path: fields[0],
           kind: fields[1],
           label: fields.slice(2).join("\t")
+        })
+      }
+    } else if (key === "fan" && value !== "") {
+      // "path\tindex\tlabel\tmin\tmax": the input path, from which the
+      // target path is derived by suffix substitution. A label containing
+      // tabs survives, so the bounds are the last two fields.
+      var parts = value.split("\t")
+      var fanIndex = Number(parts[1])
+      var fanMin = Number(parts[parts.length - 2])
+      var fanMax = Number(parts[parts.length - 1])
+      if (parts.length >= 5 && isFinite(fanIndex) && fanIndex > 0
+        && isFinite(fanMin) && isFinite(fanMax)) {
+        result.fans.push({
+          path: parts[0],
+          targetPath: parts[0].replace(/_input$/, "_target"),
+          index: fanIndex,
+          label: parts.slice(2, parts.length - 2).join("\t") || ("Fan " + fanIndex),
+          min: fanMin,
+          max: fanMax
         })
       }
     }

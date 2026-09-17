@@ -112,10 +112,12 @@ Item {
   }
 
   // ---- Fan control (Apple Silicon, via the asahi-fanctl helper) ----
-  // The daemon's mode lives in a root-readable config file, so the bar tint
-  // and the panel's active preset stay live without spawning anything. Fan
-  // RPMs and the control state come from `sudo -n asahi-fanctl status`,
-  // polled only while the panel is open.
+  // The daemon's mode lives in a root-readable config file, so the active
+  // preset and the bar's manual-mode tint stay live with zero polling. Fan
+  // RPMs come straight from sysfs FileViews (always on, so RPM history
+  // accumulates even with the panel closed); the control-lock state from
+  // the watched module parameter; and one `sudo -n asahi-fanctl status`
+  // per panel open covers the daemon's own state.
   property string fanMode: ""
   property real fanCurveLoW: 4
   property real fanCurveHiW: 18
@@ -123,15 +125,80 @@ Item {
   property real fanCurveRpmMax: 5700
   property real fanCurveFloorRpm: 0
   property var fanStatus: null
-  property bool fanCtlAvailable: false
   property string fanCtlError: ""
   property bool fanControlSeen: false
+  property bool fanControlUnlocked: false
 
+  // Fan specs from discovery (the Instantiator model) with parallel live
+  // arrays for current speed and manual target.
+  property var fanSpecs: []
+  property var fanValues: []
+  property var fanTargets: []
+  // RPM history keyed by fan index, so it survives hwmon rediscovery after
+  // a driver rebind moves the sysfs paths.
+  property var fanHistories: ({})
+
+  readonly property bool fanCtlAvailable: fanMode !== ""
   readonly property bool fansManual: fanMode !== "" && fanMode !== "auto"
+
+  // Display rows: specs zipped with their live readings.
+  readonly property var fans: {
+    var rows = []
+    for (var i = 0; i < fanSpecs.length; i++) {
+      rows.push({
+        index: fanSpecs[i].index,
+        label: fanSpecs[i].label,
+        rpm: fanValues[i] === undefined ? -1 : fanValues[i],
+        target: fanTargets[i] === undefined ? -1 : fanTargets[i],
+        min: fanSpecs[i].min,
+        max: fanSpecs[i].max
+      })
+    }
+    return rows
+  }
+
+  function fanHistoryFor(fanIndex) {
+    return fanHistories[fanIndex] || []
+  }
+
+  // One scale across every fan line, like the mirrored network pair; the
+  // chart prints the same number it draws against.
+  readonly property real fansPeakRpm: {
+    var peak = 0
+    for (var i = 0; i < fanSpecs.length; i++) {
+      var value = Model.peakValue(fanHistories[fanSpecs[i].index])
+      if (value > peak) peak = value
+    }
+    return peak
+  }
 
   function runFanctl(args) {
     fanctlProc.command = ["sudo", "-n", "/usr/local/bin/asahi-fanctl"].concat(args)
     fanctlProc.running = true
+  }
+
+  // ---- Thermal headline history ----
+  // One point per sample tick of whichever value the HEAT tile carries:
+  // package temperature, heatpipe watts, then warmest exposed temperature.
+  property var thermalHistory: []
+  property string lastThermalUnit: ""
+  property double lastThermalRecordMs: 0
+
+  readonly property real thermalHeadline: cpuTemperature >= 0 ? cpuTemperature : (heatpipeWatts >= 0 ? heatpipeWatts : hottestPlatformTemp)
+  readonly property string thermalHeadlineUnit: cpuTemperature >= 0 ? "°C" : (heatpipeWatts >= 0 ? "W" : "°C")
+  readonly property real thermalPeak: Model.peakValue(thermalHistory)
+
+  function recordThermal() {
+    var now = Date.now()
+    if (now - lastThermalRecordMs < 900) return
+    var value = thermalHeadline
+    if (!isFinite(value) || value < 0) return
+    if (thermalHeadlineUnit !== lastThermalUnit) {
+      thermalHistory = []
+      lastThermalUnit = thermalHeadlineUnit
+    }
+    lastThermalRecordMs = now
+    thermalHistory = appendHistory(thermalHistory, now, value)
   }
 
   property var cpuHistory: []
@@ -168,6 +235,32 @@ Item {
     var next = platformSensorValues.slice()
     next[index] = value
     platformSensorValues = next
+  }
+
+  function updateFanValue(pos, which, raw) {
+    var spec = fanSpecs[pos]
+    if (!spec) return
+    var text = String(raw === undefined || raw === null ? "" : raw).trim()
+    var value = /^[0-9]+$/.test(text) ? Number(text) : -1
+    if (which === "rpm") {
+      if (fanValues[pos] === value) return
+      var nextValues = fanValues.slice()
+      nextValues[pos] = value
+      fanValues = nextValues
+      if (value >= 0) {
+        // Reassign the whole map: mutating a key would not notify the
+        // history bindings.
+        var histories = ({})
+        for (var fanIndex in fanHistories) histories[fanIndex] = fanHistories[fanIndex]
+        histories[spec.index] = appendHistory(histories[spec.index] || [], Date.now(), value)
+        fanHistories = histories
+      }
+    } else {
+      if (fanTargets[pos] === value) return
+      var nextTargets = fanTargets.slice()
+      nextTargets[pos] = value
+      fanTargets = nextTargets
+    }
   }
 
   function parseFanConfig(raw) {
@@ -214,8 +307,13 @@ Item {
       var sensorFile = sensorFileViews.objectAt(i)
       if (sensorFile) sensorFile.sample()
     }
-    // Fan RPMs only matter while someone is looking at the panel.
-    if (panelOpen && hasPlatformSensors && !fanStatusProc.running) fanStatusProc.running = true
+    // Fan speeds are cheap sysfs reads and the history chart wants them
+    // even while nobody is looking, so they follow the shared cadence.
+    for (var j = 0; j < fanFileViews.count; j++) {
+      var fanFile = fanFileViews.objectAt(j)
+      if (fanFile) fanFile.sample()
+    }
+    recordThermal()
 
     var now = Date.now()
     if (panelOpen && !filesystemProc.running && now - lastFilesystemRefreshMs >= 60000) {
@@ -310,6 +408,9 @@ Item {
   onPanelOpenChanged: {
     sampleTimer.restart()
     sample()
+    // One helper poll per open covers the daemon's own state (active, mode
+    // sanity); everything else lives in watched files and sysfs views.
+    if (panelOpen && fanCtlAvailable && !fanStatusProc.running) fanStatusProc.running = true
   }
 
   Timer {
@@ -340,6 +441,41 @@ Item {
         printErrors: false
         onLoaded: root.updateSensorValue(sensorDelegate.modelData.index, text())
         onLoadFailed: root.updateSensorValue(sensorDelegate.modelData.index, "")
+      }
+    }
+  }
+
+  // One pair of FileViews per discovered fan: current speed (polled on the
+  // shared cadence, feeding the RPM history) and the manual target.
+  Instantiator {
+    id: fanFileViews
+    model: root.fanSpecs
+
+    delegate: Item {
+      id: fanDelegate
+      required property var modelData
+
+      function sample() {
+        fanInputFile.reload()
+        fanTargetFile.reload()
+      }
+
+      FileView {
+        id: fanInputFile
+        path: fanDelegate.modelData.path
+        watchChanges: false
+        printErrors: false
+        onLoaded: root.updateFanValue(fanDelegate.modelData.pos, "rpm", text())
+        onLoadFailed: root.updateFanValue(fanDelegate.modelData.pos, "rpm", "")
+      }
+
+      FileView {
+        id: fanTargetFile
+        path: fanDelegate.modelData.targetPath
+        watchChanges: false
+        printErrors: false
+        onLoaded: root.updateFanValue(fanDelegate.modelData.pos, "target", text())
+        onLoadFailed: root.updateFanValue(fanDelegate.modelData.pos, "target", "")
       }
     }
   }
@@ -471,13 +607,33 @@ Item {
     watchChanges: true
     printErrors: false
     onLoaded: root.parseFanConfig(text())
-    onLoadFailed: {
-      root.fanMode = ""
-      root.fanCtlAvailable = false
-    }
+    onLoadFailed: root.fanMode = ""
     onFileChanged: reload()
   }
 
+  // The kernel parameter gates manual control. Watching it keeps the Enable
+  // button honest the moment control unlocks — including when the daemon
+  // does it on its own, which rebinds the driver and moves sysfs paths, so
+  // a false→true transition triggers a rediscovery.
+  FileView {
+    id: fanControlParamFile
+    path: "/sys/module/macsmc_hwmon/parameters/fan_control"
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      var value = String(text()).trim()
+      root.fanControlUnlocked = value === "Y" || value === "y" || value === "1"
+      if (root.fanControlUnlocked && !root.fanControlSeen && !discoveryProc.running) {
+        discoveryProc.running = true
+      }
+      root.fanControlSeen = root.fanControlUnlocked
+    }
+    onLoadFailed: root.fanControlUnlocked = false
+    onFileChanged: reload()
+  }
+
+  // Authoritative one-shot daemon state, polled once per panel open and
+  // after every action; RPMs and targets come from sysfs, not from here.
   Process {
     id: fanStatusProc
     command: ["sudo", "-n", "/usr/local/bin/asahi-fanctl", "status"]
@@ -486,20 +642,7 @@ Item {
       onStreamFinished: {
         var parsed = null
         try { parsed = JSON.parse(String(text)) } catch (error) { parsed = null }
-        if (parsed && parsed.fans !== undefined) {
-          root.fanStatus = parsed
-          root.fanCtlAvailable = true
-          root.fanCtlError = ""
-        } else {
-          root.fanStatus = null
-          root.fanCtlAvailable = false
-        }
-        // The daemon can unlock control on its own (rebinding the driver and
-        // moving sysfs paths); a false→true transition means rediscover.
-        if (parsed && parsed.control && !root.fanControlSeen && !discoveryProc.running) {
-          discoveryProc.running = true
-        }
-        if (parsed) root.fanControlSeen = parsed.control === true
+        root.fanStatus = parsed && parsed.daemon !== undefined ? parsed : null
       }
     }
     stderr: StdioCollector {
@@ -509,8 +652,8 @@ Item {
   }
 
   // One-shot runner for mode/curve/enable commands; the exit handler
-  // refreshes status, and `enable` additionally rediscovers sensors (the
-  // driver rebind moves hwmon paths).
+  // refreshes the param view and daemon state, and `enable` additionally
+  // rediscovers sensors (the driver rebind moves hwmon paths).
   Process {
     id: fanctlProc
     property bool rediscovers: false
@@ -521,9 +664,10 @@ Item {
     }
     onExited: function(exitCode, exitStatus) {
       if (exitCode === 0) root.fanCtlError = ""
+      fanControlParamFile.reload()
       if (rediscovers && !discoveryProc.running) discoveryProc.running = true
       rediscovers = false
-      fanStatusProc.running = true
+      if (!fanStatusProc.running) fanStatusProc.running = true
     }
   }
 
@@ -571,9 +715,42 @@ Item {
           var sensorFile = sensorFileViews.objectAt(k)
           if (sensorFile) sensorFile.sample()
         }
+
+        // Fans: same pattern — rebuild only when the set changed (a driver
+        // rebind moves paths; the RPM history is keyed by fan index so it
+        // carries across the rebuild).
+        var nextFanSpecs = []
+        for (var f = 0; f < discovered.fans.length; f++) {
+          nextFanSpecs.push({
+            pos: f,
+            index: discovered.fans[f].index,
+            path: discovered.fans[f].path,
+            targetPath: discovered.fans[f].targetPath,
+            label: discovered.fans[f].label,
+            min: discovered.fans[f].min,
+            max: discovered.fans[f].max
+          })
+        }
+        if (JSON.stringify(nextFanSpecs) !== JSON.stringify(root.fanSpecs)) {
+          root.fanSpecs = nextFanSpecs
+          var nextFanValues = []
+          var nextFanTargets = []
+          for (var g = 0; g < nextFanSpecs.length; g++) {
+            nextFanValues.push(-1)
+            nextFanTargets.push(-1)
+          }
+          root.fanValues = nextFanValues
+          root.fanTargets = nextFanTargets
+        }
+        for (var h = 0; h < fanFileViews.count; h++) {
+          var fanFile = fanFileViews.objectAt(h)
+          if (fanFile) fanFile.sample()
+        }
         // An SMC hwmon machine may have the fan control helper installed:
-        // prime its state (mode comes from the watched config file).
-        if (specs.length > 0 && !fanStatusProc.running) fanStatusProc.running = true
+        // prime the daemon state (mode comes from the watched config file).
+        if ((specs.length > 0 || nextFanSpecs.length > 0) && !fanStatusProc.running) {
+          fanStatusProc.running = true
+        }
       }
     }
   }

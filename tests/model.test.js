@@ -76,7 +76,8 @@ test("discovery parser maps sensor probe output into runtime paths", () => {
     gpuVramUsedPath: "",
     gpuVramTotalPath: "",
     devices: ["nvme0n1", "sda"],
-    platformSensors: []
+    platformSensors: [],
+    fans: []
   })
 })
 
@@ -95,6 +96,23 @@ test("discovery parser captures gpu sensor paths alongside cpu and disks", () =>
   assert.equal(parsed.gpuVramTotalPath, "/sys/class/drm/card1/device/mem_info_vram_total")
   assert.deepEqual(parsed.devices, ["nvme0n1"])
   assert.deepEqual(parsed.platformSensors, [])
+  assert.deepEqual(parsed.fans, [])
+})
+
+test("discovery parser captures macsmc fan records with bounds", () => {
+  const raw = [
+    "fan\t/sys/class/hwmon/hwmon2/fan1_input\t1\tFan 1\t1200\t5779",
+    "fan\t/sys/class/hwmon/hwmon2/fan2_input\t2\tFan 2\t1200\t6241",
+    // Non-numeric bounds drop the record rather than half-parsing it.
+    "fan\t/sys/class/hwmon/hwmon2/fan3_input\t3\tBroken\tNaN\t0",
+    // A label containing a tab survives; bounds are the last two fields.
+    "fan\t/sys/class/hwmon/hwmon2/fan4_input\t4\tLeft\tRight\t1200\t6241"
+  ].join("\n")
+  assert.deepEqual(Model.parseDiscovery(raw).fans, [
+    { path: "/sys/class/hwmon/hwmon2/fan1_input", targetPath: "/sys/class/hwmon/hwmon2/fan1_target", index: 1, label: "Fan 1", min: 1200, max: 5779 },
+    { path: "/sys/class/hwmon/hwmon2/fan2_input", targetPath: "/sys/class/hwmon/hwmon2/fan2_target", index: 2, label: "Fan 2", min: 1200, max: 6241 },
+    { path: "/sys/class/hwmon/hwmon2/fan4_input", targetPath: "/sys/class/hwmon/hwmon2/fan4_target", index: 4, label: "Left\tRight", min: 1200, max: 6241 }
+  ])
 })
 
 test("discovery parser captures macsmc platform sensors with kind and label", () => {
@@ -220,7 +238,7 @@ test("manifest describes a public bar widget with configurable thresholds", () =
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"))
   assert.equal(manifest.schemaVersion, 1)
   assert.equal(manifest.id, "harshith.system-monitor")
-  assert.equal(manifest.version, "1.4.2")
+  assert.equal(manifest.version, "1.5.0")
   assert.equal(manifest.license, "MIT")
   assert.equal(manifest.homepage, "https://github.com/Harshith292002/omarchy-system-monitor")
   assert.equal(manifest.barWidget.defaultSection, "right")
