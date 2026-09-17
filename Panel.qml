@@ -504,7 +504,7 @@ Panel {
     // the added CapacityRow entries (one per auto-discovered disk), platform
     // sensor rows, thermal and RPM charts, and the fans section aren't
     // clipped.
-    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(600 + metrics.extraFilesystems.length * 40 + (metrics.hasPlatformSensors ? metrics.platformSensors.length * 40 + (metrics.fanMode === "custom" ? 470 : 370) : 0)))
+    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(600 + metrics.extraFilesystems.length * 40 + (metrics.hasPlatformSensors ? metrics.platformSensors.length * 40 + (metrics.fanMode === "custom" ? 400 : 300) : 0)))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -721,11 +721,10 @@ Panel {
           }
 
           // ---------- Fans (Apple Silicon) ----------
-          // Macs Fan Control-style: live RPMs, a two-minute RPM history so
-          // preset changes are visible the moment they land, then the
-          // preset selector. Auto hands the fans back to the SMC's own
-          // curve; the others run in the asahi-fand daemon following
-          // heatpipe power. Hidden without the SMC hwmon device.
+          // Macs Fan Control-style: live RPMs plus the preset selector.
+          // Auto hands the fans back to the SMC's own curve; the others
+          // run in the asahi-fand daemon following heatpipe power.
+          // Hidden without the SMC hwmon device.
           Column {
             width: parent.width
             spacing: Style.space(6)
@@ -746,60 +745,6 @@ Panel {
                 rangeText: (isFinite(modelData.min) && isFinite(modelData.max)
                   ? Math.round(modelData.min) + "–" + Math.round(modelData.max) + " RPM" : "")
                 manual: metrics.fansManual
-              }
-            }
-
-            // Two minutes of RPM history, one line per fan on a shared
-            // scale — the immediate visual answer to "what did that preset
-            // actually change".
-            Item {
-              width: parent.width
-              height: Style.space(64)
-              visible: metrics.fans.length > 0
-
-              Repeater {
-                model: metrics.fans
-
-                Sparkline {
-                  id: fanLine
-                  required property var modelData
-                  required property int index
-                  anchors.fill: parent
-                  points: metrics.fanHistoryFor(modelData.index)
-                  lineColor: fanLine.modelData.index % 2 === 1 ? root.accent : root.secondary
-                  fillColor: fanLine.modelData.index % 2 === 1
-                    ? Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0.16)
-                    : "transparent"
-                  // Only the first line carries the grid; the rest overlay.
-                  gridColor: fanLine.index === 0 ? root.chartGrid : "transparent"
-                  fixedMaximum: Math.max(metrics.fansPeakRpm, 1)
-                }
-              }
-
-              Text {
-                anchors.left: parent.left
-                anchors.top: parent.top
-                text: metrics.fansPeakRpm > 0 ? "peak " + Math.round(metrics.fansPeakRpm) : ""
-                textFormat: Text.PlainText
-                color: root.muted
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-              }
-
-              Row {
-                anchors.top: parent.top
-                anchors.right: parent.right
-                spacing: Style.space(8)
-
-                Repeater {
-                  model: metrics.fans
-
-                  LegendDot {
-                    required property var modelData
-                    colorValue: modelData.index % 2 === 1 ? root.accent : root.secondary
-                    label: modelData.label
-                  }
-                }
               }
             }
 

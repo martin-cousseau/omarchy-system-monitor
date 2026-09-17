@@ -114,8 +114,7 @@ Item {
   // ---- Fan control (Apple Silicon, via the asahi-fanctl helper) ----
   // The daemon's mode lives in a root-readable config file, so the active
   // preset and the bar's manual-mode tint stay live with zero polling. Fan
-  // RPMs come straight from sysfs FileViews (always on, so RPM history
-  // accumulates even with the panel closed); the control-lock state from
+  // RPMs come straight from sysfs FileViews; the control-lock state from
   // the watched module parameter; and one `sudo -n asahi-fanctl status`
   // per panel open covers the daemon's own state.
   property string fanMode: ""
@@ -134,9 +133,6 @@ Item {
   property var fanSpecs: []
   property var fanValues: []
   property var fanTargets: []
-  // RPM history keyed by fan index, so it survives hwmon rediscovery after
-  // a driver rebind moves the sysfs paths.
-  property var fanHistories: ({})
 
   readonly property bool fanCtlAvailable: fanMode !== ""
   readonly property bool fansManual: fanMode !== "" && fanMode !== "auto"
@@ -155,21 +151,6 @@ Item {
       })
     }
     return rows
-  }
-
-  function fanHistoryFor(fanIndex) {
-    return fanHistories[fanIndex] || []
-  }
-
-  // One scale across every fan line, like the mirrored network pair; the
-  // chart prints the same number it draws against.
-  readonly property real fansPeakRpm: {
-    var peak = 0
-    for (var i = 0; i < fanSpecs.length; i++) {
-      var value = Model.peakValue(fanHistories[fanSpecs[i].index])
-      if (value > peak) peak = value
-    }
-    return peak
   }
 
   function runFanctl(args) {
@@ -247,14 +228,6 @@ Item {
       var nextValues = fanValues.slice()
       nextValues[pos] = value
       fanValues = nextValues
-      if (value >= 0) {
-        // Reassign the whole map: mutating a key would not notify the
-        // history bindings.
-        var histories = ({})
-        for (var fanIndex in fanHistories) histories[fanIndex] = fanHistories[fanIndex]
-        histories[spec.index] = appendHistory(histories[spec.index] || [], Date.now(), value)
-        fanHistories = histories
-      }
     } else {
       if (fanTargets[pos] === value) return
       var nextTargets = fanTargets.slice()
@@ -446,7 +419,7 @@ Item {
   }
 
   // One pair of FileViews per discovered fan: current speed (polled on the
-  // shared cadence, feeding the RPM history) and the manual target.
+  // shared cadence) and the manual target.
   Instantiator {
     id: fanFileViews
     model: root.fanSpecs
@@ -717,8 +690,7 @@ Item {
         }
 
         // Fans: same pattern — rebuild only when the set changed (a driver
-        // rebind moves paths; the RPM history is keyed by fan index so it
-        // carries across the rebuild).
+        // rebind moves paths).
         var nextFanSpecs = []
         for (var f = 0; f < discovered.fans.length; f++) {
           nextFanSpecs.push({
