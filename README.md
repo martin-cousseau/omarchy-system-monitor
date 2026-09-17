@@ -136,10 +136,9 @@ simply explains that control is unavailable.
 | Custom | Your own curve: RPM scales between two bounds as heatpipe power crosses a watt window, with an optional always-at-least floor |
 
 The presets are deliberately far apart — Quiet and Boost differ by more
-than 1200 RPM at idle. The fans section also plots two minutes of RPM
-history per fan, so a preset change is visible the moment it lands, and the
-sensors section charts the thermal headline (heatpipe watts) over the same
-window.
+than 1200 RPM at idle. Live RPM rows show the effect of a preset change
+immediately. The sensors section charts the thermal headline (heatpipe
+watts on Asahi, package temperature elsewhere) over a two-minute window.
 
 Why heatpipe power and not CPU temperature: Asahi does not expose SoC die
 temperatures — they live in the PMU. The SMC's heatpipe power reading is an
