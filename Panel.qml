@@ -69,6 +69,24 @@ Panel {
     return text
   }
 
+  // Fixed-width thermal bar value: watts on Asahi (heatpipe), °C elsewhere.
+  function padThermalBarValue() {
+    if (thermalTileIsWatts()) {
+      var text = metrics.heatpipeWatts.toFixed(1) + "W"
+      while (text.length < 5) text = " " + text
+      return text
+    }
+    var t = metrics.cpuTemperature >= 0 ? metrics.cpuTemperature : metrics.hottestPlatformTemp
+    if (!isFinite(t) || t < 0) return "  —"
+    var deg = Math.round(t) + "°"
+    while (deg.length < 4) deg = " " + deg
+    return deg
+  }
+
+  function thermalBarName() {
+    return thermalTileIsWatts() ? "HEAT" : "TEMP"
+  }
+
   function formatBytes(value) {
     var amount = Number(value)
     if (!isFinite(amount) || amount < 0) return "—"
@@ -145,7 +163,10 @@ Panel {
   }
 
   function thermalTileDetail() {
-    if (thermalTileIsWatts()) return "SoC · no die sensor"
+    // Keep this short: the three-up tile row clips longer copy.
+    // Heatpipe watts are the real signal; no cool/warm/hot feel labels —
+    // those would pretend a chassis-dependent guess is calibrated.
+    if (thermalTileIsWatts()) return "heatpipe"
     if (metrics.cpuTemperature >= 0) {
       if (metrics.cpuTemperature >= 85) return "Warm"
       return "Normal"
@@ -236,6 +257,41 @@ Panel {
   function sensorSummaryText() {
     if (metrics.hottestPlatformTemp >= 0) return "peak " + Math.round(metrics.hottestPlatformTemp) + "°C"
     return ""
+  }
+
+  // Default SENSORS list stays short: heatpipe (drives HEAT + fans), the
+  // battery/charge thermal pair, and total system power. NAND / Wi-Fi /
+  // rail watts hide behind "show all" so the panel stays scannable.
+  property bool showAllPlatformSensors: false
+
+  function isPrimaryPlatformSensor(sensor) {
+    if (!sensor) return false
+    var label = String(sensor.label || "").toLowerCase()
+    if (label.indexOf("heatpipe") >= 0) return true
+    if (label.indexOf("battery") >= 0) return true
+    if (label.indexOf("charge") >= 0) return true
+    if (label.indexOf("total system") >= 0) return true
+    return false
+  }
+
+  function visiblePlatformSensors() {
+    var all = metrics.platformSensors
+    if (root.showAllPlatformSensors) return all
+    var rows = []
+    for (var i = 0; i < all.length; i++) {
+      if (root.isPrimaryPlatformSensor(all[i])) rows.push(all[i])
+    }
+    // If nothing matched labels (unexpected SMC naming), fall back to all
+    // rather than an empty section.
+    return rows.length > 0 ? rows : all
+  }
+
+  function hiddenPlatformSensorCount() {
+    if (root.showAllPlatformSensors) return 0
+    var all = metrics.platformSensors
+    var visible = root.visiblePlatformSensors()
+    if (visible.length === all.length) return 0
+    return Math.max(0, all.length - visible.length)
   }
 
   // ---- Fans ----
@@ -344,6 +400,11 @@ Panel {
   function barLabel() {
     // A vertical bar has room for the number and nothing else.
     if (button.vertical) {
+      if (barMode === "Temp") {
+        if (thermalTileIsWatts()) return metrics.heatpipeWatts.toFixed(0)
+        var tv = metrics.cpuTemperature >= 0 ? metrics.cpuTemperature : metrics.hottestPlatformTemp
+        return isFinite(tv) && tv >= 0 ? String(Math.round(tv)) : "—"
+      }
       var value = barMode === "CPU" ? metrics.cpuPercent
         : barMode === "Memory" ? metrics.memoryPercent
         : barMode === "GPU" ? metrics.gpuPercent
@@ -353,10 +414,10 @@ Panel {
     if (barMode === "CPU") return "CPU " + padPercent(metrics.cpuPercent)
     if (barMode === "Memory") return "RAM " + padPercent(metrics.memoryPercent)
     if (barMode === "GPU") return "GPU " + padPercent(metrics.gpuPercent)
+    if (barMode === "Temp") return thermalBarName() + " " + padThermalBarValue()
     if (barMode === "Both")
       return "C " + padPercent(metrics.cpuPercent) + " M " + padPercent(metrics.memoryPercent)
-    // Adaptive: whichever metric is under more pressure, named so the number
-    // is never ambiguous.
+    // Adaptive: CPU vs RAM pressure only — never heat/temp (explicit Temp mode).
     return metrics.cpuPercent >= metrics.memoryPercent
       ? "CPU " + padPercent(metrics.cpuPercent)
       : "RAM " + padPercent(metrics.memoryPercent)
@@ -394,7 +455,10 @@ Panel {
   }
 
   function cycleBarMode() {
-    var modes = hasGpuUsage ? ["Adaptive", "CPU", "Memory", "GPU", "Both", "Icon"] : ["Adaptive", "CPU", "Memory", "Both", "Icon"]
+    // Temp is opt-in via cycle / settings — never selected by Adaptive.
+    var modes = hasGpuUsage
+      ? ["Adaptive", "CPU", "Memory", "GPU", "Temp", "Both", "Icon"]
+      : ["Adaptive", "CPU", "Memory", "Temp", "Both", "Icon"]
     var index = modes.indexOf(barMode)
     var next = modes[(index + 1) % modes.length]
     settings = Object.assign({}, settings, { barMode: next })
@@ -650,8 +714,8 @@ Panel {
 
           // ---------- Platform sensors (Apple Silicon) ----------
           // Asahi machines have no package sensor, but the SMC publishes
-          // labelled peripheral temperatures and power rails. Listed here so
-          // the readings that do exist are never hidden behind a dash.
+          // labelled peripheral temperatures and power rails. Default list
+          // is the useful few; "show all" reveals the rest.
           Column {
             width: parent.width
             spacing: Style.space(6)
@@ -708,7 +772,7 @@ Panel {
             }
 
             Repeater {
-              model: metrics.platformSensors
+              model: root.visiblePlatformSensors()
 
               SensorRow {
                 required property var modelData
@@ -717,6 +781,19 @@ Panel {
                 meter: modelData.kind === "temp" ? root.temperatureBandMeter(modelData.value) : -1
                 meterColor: root.levelColor(modelData.value, 85, 95)
               }
+            }
+
+            Button {
+              visible: root.hiddenPlatformSensorCount() > 0 || root.showAllPlatformSensors
+              width: parent.width
+              text: root.showAllPlatformSensors
+                ? "Show fewer sensors"
+                : ("Show all sensors · " + root.hiddenPlatformSensorCount() + " more")
+              foreground: root.foreground
+              accent: root.accent
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              onClicked: root.showAllPlatformSensors = !root.showAllPlatformSensors
             }
           }
 
