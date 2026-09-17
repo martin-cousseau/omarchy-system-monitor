@@ -19,8 +19,10 @@ background daemon or telemetry service.
 - Platform sensor section on Apple Silicon (Asahi): every labelled SMC
   temperature and power rail, since no SoC die sensor exists there
 - Fan control on Apple Silicon (optional, via the `asahi-fanctl` helper):
-  live RPMs, SMC/Auto plus Quiet, Balanced, Boost, Full, and custom
-  heatpipe-power curve presets
+  live RPMs, SMC/Auto plus Quiet, Boost, Full, and custom heatpipe-power
+  curve presets
+- Bar `Temp` mode: heatpipe watts on Asahi (`HEAT`), package °C elsewhere
+  (`TEMP`); never selected by Adaptive
 - GPU utilization, temperature, and VRAM, with per-sensor vendor fallbacks
 - Two-minute CPU, memory, and GPU history with per-core utilization
 - Mirrored network throughput history on a shared scale
@@ -139,6 +141,15 @@ The presets are deliberately far apart — Quiet and Boost differ by more
 than 1200 RPM at idle. Live RPM rows show the effect of a preset change
 immediately. The sensors section charts the thermal headline (heatpipe
 watts on Asahi, package temperature elsewhere) over a two-minute window.
+
+### Heatpipe power (definition)
+
+On Apple Silicon under Asahi, **heatpipe power** is the SMC’s estimate of
+how many watts the SoC is dumping through its heatpipes. It is **not** die
+temperature (°C) and **not** chassis skin temperature — those die sensors
+are not exposed in sysfs. The HEAT tile and optional bar `Temp` mode show
+this value because it is the best available proxy for SoC thermal load and
+the same input the fan curves follow.
 
 Why heatpipe power and not CPU temperature: Asahi does not expose SoC die
 temperatures — they live in the PMU. The SMC's heatpipe power reading is an

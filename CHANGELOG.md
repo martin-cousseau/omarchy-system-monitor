@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.5.2 - 2026-09-17
+
+- Apple Silicon SENSORS default list is shorter (battery hotspot, charge
+  regulator, total system power, heatpipe) with the rest behind
+  “Show all sensors”
+- New bar display mode `Temp`: shows heatpipe watts as `HEAT` on Asahi, or
+  package/platform °C as `TEMP` elsewhere. Not part of Adaptive (still
+  CPU vs RAM only)
+- HEAT tile detail is factual (`heatpipe`) — no cool/warm/hot feel labels
+
 ## 1.5.1 - 2026-09-17
 
 - Drop the RPM history sparkline from the fans section (live RPM rows and
