@@ -51,6 +51,40 @@ Item {
   property double lastSampleMs: 0
   property double lastFilesystemRefreshMs: 0
 
+  // Apple Silicon (Asahi) platform sensors. The specs array is the Instantiator
+  // model and only ever changes at discovery; the parallel values array is
+  // reassigned on every sample. Keeping them separate stops a value update
+  // from tearing down and rebuilding every sensor's FileView.
+  property var platformSensorSpecs: []
+  property var platformSensorValues: []
+
+  // Display rows: specs zipped with their latest values. Reassigned whenever
+  // either source changes, so Panel Repeaters re-render cheaply.
+  readonly property var platformSensors: {
+    var rows = []
+    for (var i = 0; i < platformSensorSpecs.length; i++) {
+      rows.push({
+        label: platformSensorSpecs[i].label,
+        kind: platformSensorSpecs[i].kind,
+        value: platformSensorValues[i] === undefined ? -1 : platformSensorValues[i]
+      })
+    }
+    return rows
+  }
+
+  readonly property bool hasPlatformSensors: platformSensorSpecs.length > 0
+
+  // Hottest platform temperature; drives the bar's warning tint and the
+  // tooltip's peak reading on machines with no package sensor.
+  readonly property real hottestPlatformTemp: {
+    var hottest = -1
+    for (var i = 0; i < platformSensors.length; i++) {
+      if (platformSensors[i].kind !== "temp") continue
+      if (platformSensors[i].value > hottest) hottest = platformSensors[i].value
+    }
+    return hottest
+  }
+
   property var cpuHistory: []
   property var memoryHistory: []
   property var gpuHistory: []
@@ -78,6 +112,15 @@ Item {
     return next
   }
 
+  function updateSensorValue(index, raw) {
+    var spec = platformSensorSpecs[index]
+    var value = spec ? Model.parseSensorValue(raw, spec.kind) : -1
+    if (platformSensorValues[index] === value) return
+    var next = platformSensorValues.slice()
+    next[index] = value
+    platformSensorValues = next
+  }
+
   function sample() {
     statFile.reload()
     memoryFile.reload()
@@ -92,6 +135,10 @@ Item {
     // VRAM only moves when the panel is open and a human is looking; polling
     // it on the closed cadence buys nothing and costs two sysfs reads.
     if (panelOpen && gpuVramUsedPath !== "") gpuVramUsedFile.reload()
+    for (var i = 0; i < sensorFileViews.count; i++) {
+      var sensorFile = sensorFileViews.objectAt(i)
+      if (sensorFile) sensorFile.sample()
+    }
 
     var now = Date.now()
     if (panelOpen && !filesystemProc.running && now - lastFilesystemRefreshMs >= 60000) {
@@ -194,6 +241,30 @@ Item {
     repeat: true
     running: true
     onTriggered: root.sample()
+  }
+
+  // One FileView per discovered platform sensor, created on demand. Item
+  // delegates with zero size keep them out of the visual tree; the Instantiator
+  // pattern mirrors the shell's own agents plugin.
+  Instantiator {
+    id: sensorFileViews
+    model: root.platformSensorSpecs
+
+    delegate: Item {
+      id: sensorDelegate
+      required property var modelData
+
+      function sample() { sensorFile.reload() }
+
+      FileView {
+        id: sensorFile
+        path: sensorDelegate.modelData.path
+        watchChanges: false
+        printErrors: false
+        onLoaded: root.updateSensorValue(sensorDelegate.modelData.index, text())
+        onLoadFailed: root.updateSensorValue(sensorDelegate.modelData.index, "")
+      }
+    }
   }
 
   FileView {
@@ -336,6 +407,28 @@ Item {
         if (root.gpuVramTotalPath !== "") gpuVramTotalFile.reload()
         if (root.gpuVramUsedPath !== "") gpuVramUsedFile.reload()
         diskFile.reload()
+
+        // Same sensors, same objects: skip the reassignment when the set has
+        // not changed, so live FileViews are not torn down for nothing.
+        var specs = []
+        for (var i = 0; i < discovered.platformSensors.length; i++) {
+          specs.push({
+            index: i,
+            path: discovered.platformSensors[i].path,
+            kind: discovered.platformSensors[i].kind,
+            label: discovered.platformSensors[i].label
+          })
+        }
+        if (JSON.stringify(specs) !== JSON.stringify(root.platformSensorSpecs)) {
+          root.platformSensorSpecs = specs
+          var values = []
+          for (var j = 0; j < specs.length; j++) values.push(-1)
+          root.platformSensorValues = values
+        }
+        for (var k = 0; k < sensorFileViews.count; k++) {
+          var sensorFile = sensorFileViews.objectAt(k)
+          if (sensorFile) sensorFile.sample()
+        }
       }
     }
   }

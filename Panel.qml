@@ -35,8 +35,10 @@ Panel {
   readonly property real warningThreshold: Math.min(Number(setting("warningPercent", 80)), criticalThreshold - 1)
   readonly property real criticalThreshold: Math.max(Number(setting("criticalPercent", 95)), 61)
   readonly property real pressure: Math.max(metrics.cpuPercent, metrics.memoryPercent)
-  readonly property bool warning: pressure >= warningThreshold || metrics.cpuTemperature >= 85 || metrics.gpuTemperature >= 85
-  readonly property bool critical: pressure >= criticalThreshold || metrics.cpuTemperature >= 95 || metrics.gpuTemperature >= 95
+  // On machines with no package sensor (Apple Silicon), the hottest platform
+  // temperature carries the warning tint so the bar still reacts to heat.
+  readonly property bool warning: pressure >= warningThreshold || metrics.cpuTemperature >= 85 || metrics.gpuTemperature >= 85 || metrics.hottestPlatformTemp >= 85
+  readonly property bool critical: pressure >= criticalThreshold || metrics.cpuTemperature >= 95 || metrics.gpuTemperature >= 95 || metrics.hottestPlatformTemp >= 95
 
   readonly property string heroGlyph: "󰻠"
 
@@ -118,16 +120,31 @@ Panel {
     return metrics.cpuTemperature >= 0 ? Math.round(metrics.cpuTemperature) + "°C" : "—"
   }
 
+  // Tooltip headline: the package sensor when there is one, otherwise the
+  // hottest platform sensor — Apple Silicon has no die sensor, and a bare
+  // dash would hide readings that do exist.
+  function headlineTempText() {
+    if (metrics.cpuTemperature >= 0) return temperatureText()
+    if (metrics.hottestPlatformTemp >= 0) return "peak " + Math.round(metrics.hottestPlatformTemp) + "°C"
+    return "—"
+  }
+
   function temperatureDetail() {
-    if (metrics.cpuTemperature < 0) return "Unavailable"
+    if (metrics.cpuTemperature < 0) return metrics.hasPlatformSensors ? "No SoC sensor" : "Unavailable"
     if (metrics.cpuTemperature >= 85) return "Warm"
     return "Normal"
   }
 
-  function temperatureMeter() {
-    if (metrics.cpuTemperature < 0) return -1
+  // Package temperature only spans a useful band; drawing 57°C as 57% of a
+  // meter makes a cold chip look half-loaded. Anchor the scale at 30°C.
+  function temperatureBandMeter(value) {
+    if (!isFinite(value) || value < 0) return -1
     var span = temperatureCeiling - temperatureFloor
-    return Math.max(0, Math.min(100, (metrics.cpuTemperature - temperatureFloor) * 100 / span))
+    return Math.max(0, Math.min(100, (value - temperatureFloor) * 100 / span))
+  }
+
+  function temperatureMeter() {
+    return temperatureBandMeter(metrics.cpuTemperature)
   }
 
   // Vendors expose different subsets: amdgpu publishes utilisation, memory and
@@ -153,9 +170,20 @@ Panel {
   // Same anchored scale as the CPU package sensor: a cold die drawn as a
   // fraction of 100°C reads as half-loaded.
   function gpuTemperatureMeter() {
-    if (metrics.gpuTemperature < 0) return -1
-    var span = temperatureCeiling - temperatureFloor
-    return Math.max(0, Math.min(100, (metrics.gpuTemperature - temperatureFloor) * 100 / span))
+    return temperatureBandMeter(metrics.gpuTemperature)
+  }
+
+  // Platform sensor rows: hwmon temperatures in °C, power rails in W. The
+  // value is muted rather than dash-only when a sensor reports nothing.
+  function sensorValueText(sensor) {
+    if (!sensor || !isFinite(sensor.value) || sensor.value < 0) return "—"
+    if (sensor.kind === "power") return sensor.value.toFixed(1) + " W"
+    return Math.round(sensor.value) + "°C"
+  }
+
+  function sensorSummaryText() {
+    if (metrics.hottestPlatformTemp >= 0) return "peak " + Math.round(metrics.hottestPlatformTemp) + "°C"
+    return ""
   }
 
   // Row skips invisible children, so the divisor is the number of tiles that
@@ -255,7 +283,7 @@ Panel {
     // Text.AutoText, so neutralize markup before handing it configuration.
     var interfaceName = Model.escapeMarkup(metrics.activeInterface)
     var lines = [
-      "CPU " + percent(metrics.cpuPercent) + " · RAM " + percent(metrics.memoryPercent) + " · " + temperatureText()
+      "CPU " + percent(metrics.cpuPercent) + " · RAM " + percent(metrics.memoryPercent) + " · " + headlineTempText()
     ]
     // Skipped entirely on machines without a utilisation-reporting GPU, so
     // the tooltip never grows a row of em dashes.
@@ -381,9 +409,9 @@ Panel {
     contentWidth: panel.fittedContentWidth(Style.space(380))
     // Capped height, not a fixed one: fittedContentHeight still shrinks to fit
     // the screen and to the content itself, this just raises the ceiling so
-    // the added CapacityRow entries (one per auto-discovered disk) aren't
-    // clipped.
-    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(600 + metrics.extraFilesystems.length * 40))
+    // the added CapacityRow entries (one per auto-discovered disk) and
+    // platform sensor rows aren't clipped.
+    contentHeight: panel.fittedContentHeight(panelColumn.implicitHeight, Style.space(600 + metrics.extraFilesystems.length * 40 + (metrics.hasPlatformSensors ? metrics.platformSensors.length * 40 : 0)))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -524,6 +552,33 @@ Panel {
               meter: root.gpuVramPercent()
               meterColor: root.levelColor(root.gpuVramPercent(), root.warningThreshold, root.criticalThreshold)
               alarming: root.gpuVramPercent() >= root.criticalThreshold
+            }
+          }
+
+          // ---------- Platform sensors (Apple Silicon) ----------
+          // Asahi machines have no package sensor, but the SMC publishes
+          // labelled peripheral temperatures and power rails. Listed here so
+          // the readings that do exist are never hidden behind a dash.
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+            visible: metrics.hasPlatformSensors
+
+            SectionHeading {
+              title: "SENSORS"
+              value: root.sensorSummaryText()
+            }
+
+            Repeater {
+              model: metrics.platformSensors
+
+              SensorRow {
+                required property var modelData
+                label: modelData.label
+                value: root.sensorValueText(modelData)
+                meter: modelData.kind === "temp" ? root.temperatureBandMeter(modelData.value) : -1
+                meterColor: root.levelColor(modelData.value, 85, 95)
+              }
             }
           }
 
@@ -994,6 +1049,56 @@ Panel {
       color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall
+    }
+  }
+
+  // One platform sensor: label left, live value right, and for temperatures
+  // the same anchored meter band the package tiles use. Power rails skip the
+  // meter — there is no natural ceiling for watts.
+  component SensorRow: Column {
+    id: sensorRow
+    property string label: ""
+    property string value: "—"
+    property real meter: -1
+    property color meterColor: root.accent
+
+    width: parent ? parent.width : 0
+    spacing: Style.space(3)
+
+    Item {
+      width: parent.width
+      implicitHeight: Math.max(sensorLabel.implicitHeight, sensorValue.implicitHeight)
+
+      Text {
+        id: sensorLabel
+        text: sensorRow.label
+        // Labels arrive from sysfs label files, so pin the format instead of
+        // leaving Text.AutoText to sniff a crafted label as rich text.
+        textFormat: Text.PlainText
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        id: sensorValue
+        text: sensorRow.value
+        color: root.muted
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.bold: true
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    Meter {
+      width: parent.width
+      visible: sensorRow.meter >= 0
+      value: sensorRow.meter
+      fillColor: sensorRow.meterColor
     }
   }
 

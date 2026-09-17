@@ -75,7 +75,8 @@ test("discovery parser maps sensor probe output into runtime paths", () => {
     gpuTempPath: "",
     gpuVramUsedPath: "",
     gpuVramTotalPath: "",
-    devices: ["nvme0n1", "sda"]
+    devices: ["nvme0n1", "sda"],
+    platformSensors: []
   })
 })
 
@@ -93,6 +94,42 @@ test("discovery parser captures gpu sensor paths alongside cpu and disks", () =>
   assert.equal(parsed.gpuTempPath, "/sys/class/drm/card1/device/hwmon/hwmon1/temp1_input")
   assert.equal(parsed.gpuVramTotalPath, "/sys/class/drm/card1/device/mem_info_vram_total")
   assert.deepEqual(parsed.devices, ["nvme0n1"])
+  assert.deepEqual(parsed.platformSensors, [])
+})
+
+test("discovery parser captures macsmc platform sensors with kind and label", () => {
+  const raw = [
+    "platform_sensor\t/sys/class/hwmon/hwmon2/temp1_input\ttemp\tNAND Flash Temperature",
+    "platform_sensor\t/sys/class/hwmon/hwmon2/power1_input\tpower\tTotal System Power",
+    "platform_sensor\t/sys/class/hwmon/hwmon2/temp2_input\ttemp\tBattery Hotspot",
+    // Unknown kinds are dropped rather than guessed at.
+    "platform_sensor\t/sys/class/hwmon/hwmon2/curr1_input\tcurr\tCharger Current",
+    // A label containing a tab survives: everything past the kind is the label.
+    "platform_sensor\t/sys/class/hwmon/hwmon2/power4_input\tpower\tHeatpipe\tPower",
+    // Malformed lines are skipped whole.
+    "platform_sensor\t/sys/class/hwmon/hwmon2/temp9_input\ttemp"
+  ].join("\n")
+  const parsed = Model.parseDiscovery(raw)
+  assert.equal(parsed.cpuTempPath, "")
+  assert.deepEqual(parsed.platformSensors, [
+    { path: "/sys/class/hwmon/hwmon2/temp1_input", kind: "temp", label: "NAND Flash Temperature" },
+    { path: "/sys/class/hwmon/hwmon2/power1_input", kind: "power", label: "Total System Power" },
+    { path: "/sys/class/hwmon/hwmon2/temp2_input", kind: "temp", label: "Battery Hotspot" },
+    { path: "/sys/class/hwmon/hwmon2/power4_input", kind: "power", label: "Heatpipe\tPower" }
+  ])
+})
+
+test("platform sensor values follow the hwmon ABI scale and reject junk", () => {
+  assert.equal(Model.parseSensorValue("38500", "temp"), 38.5)
+  assert.equal(Model.parseSensorValue("29970000", "power"), 29.97)
+  // Zero is a real reading (a rail at rest), not a missing one.
+  assert.equal(Model.parseSensorValue("0", "power"), 0)
+  assert.equal(Model.parseSensorValue("", "temp"), -1)
+  assert.equal(Model.parseSensorValue("   ", "temp"), -1)
+  assert.equal(Model.parseSensorValue(null, "temp"), -1)
+  assert.equal(Model.parseSensorValue("abc", "temp"), -1)
+  // Negative readings are not published by these sensors; treat as missing.
+  assert.equal(Model.parseSensorValue("-3", "temp"), -1)
 })
 
 test("gpu percent parser clamps to the 0-100 band and rejects missing readings", () => {
@@ -183,7 +220,7 @@ test("manifest describes a public bar widget with configurable thresholds", () =
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"))
   assert.equal(manifest.schemaVersion, 1)
   assert.equal(manifest.id, "harshith.system-monitor")
-  assert.equal(manifest.version, "1.2.0")
+  assert.equal(manifest.version, "1.3.0")
   assert.equal(manifest.license, "MIT")
   assert.equal(manifest.homepage, "https://github.com/Harshith292002/omarchy-system-monitor")
   assert.equal(manifest.barWidget.defaultSection, "right")

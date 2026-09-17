@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.3.0 - 2026-09-17
+
+- Add an Apple Silicon (Asahi Linux) sensors section: `macsmc_hwmon` publishes
+  no package sensor — SoC die temperatures live in the PMU and never reach
+  sysfs — but it does carry labelled peripheral temperatures and power rails,
+  including a heatpipe power estimate. Every readable sensor is now listed in
+  a SENSORS section, with the hottest temperature driving the bar's
+  warning/critical tint and the tooltip's peak reading
+- The temperature tile says "No SoC sensor" on those machines instead of a
+  bare "Unavailable", making clear the dash is a platform limitation rather
+  than a discovery failure
+- The hwmon discovery root is overridable via `OMARCHY_SYSMON_HWMON_ROOT` for
+  fixture tests, mirroring the DRM root
+
 ## 1.2.0 - 2026-08-31
 
 - Add an `Icon` bar display mode: the plugin glyph alone, no live text, for

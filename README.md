@@ -16,6 +16,8 @@ background daemon or telemetry service.
 
 - Adaptive bar widget that can show CPU, memory, GPU, or both
 - Expandable dashboard for CPU, RAM, temperature, load, and uptime
+- Platform sensor section on Apple Silicon (Asahi): every labelled SMC
+  temperature and power rail, since no SoC die sensor exists there
 - GPU utilization, temperature, and VRAM, with per-sensor vendor fallbacks
 - Two-minute CPU, memory, and GPU history with per-core utilization
 - Mirrored network throughput history on a shared scale
@@ -65,10 +67,15 @@ pressure. Warning and critical colors follow the active Omarchy theme.
 | Network throughput | `/proc/net/route`, `/proc/net/dev` |
 | Disk throughput | `/proc/diskstats` and `/sys/class/block` |
 | CPU temperature | `/sys/class/hwmon` (`coretemp`, `k10temp`, or `zenpower`) |
+| Platform sensors (Apple Silicon/Asahi) | `/sys/class/hwmon` (`macsmc_hwmon` labelled temps and power rails) |
 | GPU load, temperature, and VRAM | `/sys/class/drm/card*/device` (`gpu_busy_percent`, `hwmon`, `mem_info_vram_*`) |
 | Filesystem capacity | `df -P -k -l -T` |
 
-Temperature is shown when a supported package sensor is available. Disk
+Temperature is shown when a supported package sensor is available. Apple
+Silicon Macs on Asahi have none — the SoC's die temperatures live in the PMU,
+not sysfs — so those machines get a SENSORS section listing every labelled
+`macsmc_hwmon` reading instead, with the hottest one driving the bar tint and
+tooltip. Disk
 activity aggregates physical devices and ignores loop, RAM, zram, floppy, and
 optical devices.
 
